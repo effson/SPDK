@@ -6,16 +6,16 @@
 //typedef void (*spdk_bdev_event_cb_t)(enum spdk_bdev_event_type type, struct spdk_bdev *bdev,
 //               void *event_ctx);
 
-void jeff_fs_bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev,
+static void jeff_fs_bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev,
                void *event_ctx) {
     // printf("jeff-fs bdev event callback\n");
 }
 
-void jeff_fs_create_complete_cb(void *cb_arg, spdk_blob_id blobid, int bserrno){
+static void jeff_fs_create_complete_cb(void *cb_arg, spdk_blob_id blobid, int bserrno){
 
 }
 
-void jeff_fs_init_complete_cb(void *cb_arg, struct spdk_blob_store *bs,
+static void jeff_fs_init_complete_cb(void *cb_arg, struct spdk_blob_store *bs,
 		int bserrno) {
 
     /*typedef void (*spdk_blob_op_with_id_complete)(void *cb_arg, spdk_blob_id blobid, int bserrno);*/
