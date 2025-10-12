@@ -7,7 +7,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-typedef int (*open_t)(const char *pathname, int flags);
+typedef int (*open_t)(const char *pathname, int flags, ...);
 open_t open_f = NULL;
 
 typedef ssize_t (*read_t)(int fd, void* buf, size_t count);
@@ -25,7 +25,7 @@ lseek_t lseek_f = NULL;
 typedef int (*create_t)(const char *pathname, mode_t mode);
 create_t create_f = NULL;
 
-int open(const char *pathname, int flags) {
+int open(const char *pathname, int flags, ...) {
     if (!open_f) {
         open_f = dlsym(RTLD_NEXT, "open");
     }
