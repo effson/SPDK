@@ -2,54 +2,125 @@
 #include <spdk/event.h>
 #include <spdk/blob_bdev.h>
 #include <spdk/blob.h>
+#include <spdk/bdev.h>
+#include <spdk/env.h>
 
-//typedef void (*spdk_bdev_event_cb_t)(enum spdk_bdev_event_type type, struct spdk_bdev *bdev,
-//               void *event_ctx);
+typedef struct jeff_fs_context_s {
+    struct spdk_bs_dev *bs_dev;
+    struct spdk_blob_store *blb_store;
+    spdk_blob_id blb_id;
+    struct spdk_io_channel *channel;
+    struct spdk_blob *blb;
+
+    uint64_t io_unit_size;
+    uint8_t *write_buf;
+    uint8_t *read_buf;
+} jeff_fs_context_t;
 
 static void jeff_fs_bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev,
-               void *event_ctx) {
-    // printf("jeff-fs bdev event callback\n");
+            void *event_ctx) {
+    SPDK_NOTICELOG("---> Enter %s\n", __func__);
 }
 
-static void jeff_fs_create_complete_cb(void *cb_arg, spdk_blob_id blobid, int bserrno){
-
+static void jeff_fs_blob_read_complete_cb(void *cb_arg, int bserrno){
+    jeff_fs_context_t *ctx = (jeff_fs_context_t *)cb_arg;
+    SPDK_NOTICELOG("---> Enter %s\n", __func__);
+    SPDK_NOTICELOG("size:%lu, buf:%s\n", ctx->io_unit_size, ctx->read_buf);
 }
 
-static void jeff_fs_init_complete_cb(void *cb_arg, struct spdk_blob_store *bs,
-		int bserrno) {
-
-    /*typedef void (*spdk_blob_op_with_id_complete)(void *cb_arg, spdk_blob_id blobid, int bserrno);*/
-    spdk_bs_create_blob(bs, jeff_fs_create_complete_cb, NULL);
-}
-
-/*
-int spdk_bdev_create_bs_dev_ext(const char *bdev_name, spdk_bdev_event_cb_t event_cb,
-			    void *event_ctx, struct spdk_bs_dev **bs_dev)
-{
-	return spdk_bdev_create_bs_dev(bdev_name, true, NULL, 0, event_cb, event_ctx, bs_dev);
-}*/
-
-static void jeff_fs_entry (void *ctx) {
-    // printf("jeff-fs started\n");
-
-    const char *bdev_name = "Malloc0";
-    struct spdk_bs_dev *bs_dev = NULL;
-    int rc = spdk_bdev_create_bs_dev_ext(bdev_name, jeff_fs_bdev_event_cb, NULL, &bs_dev);
-    if (rc != 0) {
-        fprintf(stderr, "Failed to create blobstore on bdev %s\n", bdev_name);
+static void jeff_fs_blob_write_complete_cb(void *cb_arg, int bserrno){
+    jeff_fs_context_t *ctx = (jeff_fs_context_t *)cb_arg;
+    SPDK_NOTICELOG("---> Enter %s\n", __func__);
+    ctx->read_buf = spdk_zmalloc(ctx->io_unit_size, 0x1000, NULL,
+                                 SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
+    if (!ctx->read_buf) {
+        SPDK_NOTICELOG("Failed to allocate read buffer\n");
+        // destroy jeff_fs_context_t
         spdk_app_stop(-1);
         return;
     }
 
-    /*void
-      spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
-	        spdk_bs_op_with_handle_complete cb_fn, void *cb_arg)
+    spdk_blob_io_read(ctx->blb, ctx->channel, ctx->read_buf, 0, 1, jeff_fs_blob_read_complete_cb, ctx);
+}
 
-      typedef void (*spdk_bs_op_with_handle_complete)(void *cb_arg, struct spdk_blob_store *bs,
-		int bserrno);
-    */
+static void jeff_fs_blob_sync_complete_cb(void *cb_arg, int bserrno){
+    jeff_fs_context_t *ctx = (jeff_fs_context_t *)cb_arg;
 
-    spdk_bs_init(bs_dev, NULL, jeff_fs_init_complete_cb, NULL);
+    SPDK_NOTICELOG("---> Enter %s\n", __func__);
+    ctx->write_buf = spdk_zmalloc(ctx->io_unit_size, 0x1000, NULL,
+                                  SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
+    if (!ctx->write_buf) {
+        SPDK_NOTICELOG("Failed to allocate write buffer\n");
+        // destroy jeff_fs_context_t
+        spdk_app_stop(-1);
+        return;
+    }
+
+    memset(ctx->write_buf, 'A', ctx->io_unit_size);
+
+    struct spdk_io_channel *channel = spdk_bs_alloc_io_channel(ctx->blb_store);
+    if (!channel) {
+        SPDK_NOTICELOG("Failed to allocate I/O channel\n");
+
+        // destroy jeff_fs_context_t
+        spdk_app_stop(-1);
+        return;
+    }
+
+    ctx->channel = channel;
+    spdk_blob_io_write(ctx->blb, channel, ctx->write_buf, 0, 1, jeff_fs_blob_write_complete_cb, ctx);
+}
+
+static void jeff_fs_blob_resize_complete_cb(void *cb_arg, int bserrno){
+    jeff_fs_context_t *ctx = (jeff_fs_context_t *)cb_arg;
+
+    SPDK_NOTICELOG("---> Enter %s\n", __func__);
+    
+    spdk_blob_sync_md(ctx->blb, jeff_fs_blob_sync_complete_cb, ctx);
+}
+
+static void jeff_fs_blob_open_complete_cb(void *cb_arg, struct spdk_blob *blb, int bserrno){
+    jeff_fs_context_t *ctx = (jeff_fs_context_t *)cb_arg;
+
+    SPDK_NOTICELOG("---> Enter %s\n", __func__);
+    ctx->blb = blb;
+    uint64_t total = spdk_bs_free_cluster_count(ctx->blb_store);
+    spdk_blob_resize(blb, total, jeff_fs_blob_resize_complete_cb, ctx);
+}
+
+static void jeff_fs_bs_create_complete_cb(void *cb_arg, spdk_blob_id blobid, int bserrno){
+    jeff_fs_context_t *ctx = (jeff_fs_context_t *)cb_arg;
+
+    SPDK_NOTICELOG("---> Enter %s\n", __func__);
+    ctx->blb_id = blobid;
+
+    spdk_bs_open_blob(ctx->blb_store, blobid, jeff_fs_blob_open_complete_cb, ctx);
+}
+
+static void jeff_fs_bs_init_complete_cb(void *cb_arg, struct spdk_blob_store *bs,
+		int bserrno) {
+    jeff_fs_context_t *ctx = (jeff_fs_context_t *)cb_arg;
+    SPDK_NOTICELOG("---> Enter %s\n", __func__);
+    ctx->blb_store = bs;
+    ctx->io_unit_size = spdk_bs_get_io_unit_size(bs);
+    spdk_bs_create_blob(bs, jeff_fs_bs_create_complete_cb, ctx);
+}
+
+static void jeff_fs_entry (void *arg) {
+    jeff_fs_context_t *ctx = (jeff_fs_context_t *)arg;
+
+    SPDK_NOTICELOG("---> Enter %s\n", __func__);
+
+    const char *bdev_name = "Malloc0";
+    // struct spdk_bs_dev *bs_dev = NULL;
+    int rc = spdk_bdev_create_bs_dev_ext(bdev_name, jeff_fs_bdev_event_cb, NULL, &ctx->bs_dev);
+    if (rc != 0) {
+        SPDK_NOTICELOG("Failed to create blobstore on bdev %s\n", bdev_name);
+        spdk_app_stop(-1);
+        return;
+    }
+
+    spdk_bs_init(ctx->bs_dev, NULL, jeff_fs_bs_init_complete_cb, ctx);
 }
 
 int main(int argc, char *argv[]) {
@@ -59,7 +130,18 @@ int main(int argc, char *argv[]) {
     opts.name = "jeff-fs";
     opts.json_config_file = argv[1];
 
-    spdk_app_start(&opts, jeff_fs_entry, NULL);
+    jeff_fs_context_t *ctx = calloc(1, sizeof(jeff_fs_context_t));
+    if (!ctx) {
+        SPDK_NOTICELOG("Failed to allocate jeff_fs_context_t\n");
+        return -1;
+    }
+
+    int ret = spdk_app_start(&opts, jeff_fs_entry, ctx);
+    if (ret) {
+        SPDK_NOTICELOG("ERROR : app start failed!\n");
+    } else {
+        SPDK_NOTICELOG("SUCCESS : app start!\n");
+    }
 
     return 0;
 }
