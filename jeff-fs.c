@@ -17,6 +17,34 @@ typedef struct jeff_fs_context_s {
     uint8_t *read_buf;
 } jeff_fs_context_t;
 
+
+static void jeff_fs_bs_unload_complete_cb(void *cb_arg, int bserrno) {
+    // jeff_fs_context_t *ctx = (jeff_fs_context_t *)cb_arg;
+
+    spdk_app_stop(1);
+}
+
+
+static void jeff_fs_bs_unload(jeff_fs_context_t *ctx) {
+    if (ctx->blb_store) {
+        if (ctx->channel) {
+            spdk_bs_free_io_channel(ctx->channel);
+        }
+
+        if (ctx->write_buf) {
+            spdk_free(ctx->write_buf);
+            ctx->write_buf = NULL;
+        }
+
+        if (ctx->read_buf) {
+            spdk_free(ctx->read_buf);
+            ctx->read_buf = NULL;
+        }
+
+        spdk_bs_unload(ctx->blb_store, jeff_fs_bs_unload_complete_cb, ctx);
+    }   
+}
+
 static void jeff_fs_bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev,
             void *event_ctx) {
     SPDK_NOTICELOG("---> Enter %s\n", __func__);
@@ -35,7 +63,7 @@ static void jeff_fs_blob_write_complete_cb(void *cb_arg, int bserrno){
                                  SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
     if (!ctx->read_buf) {
         SPDK_NOTICELOG("Failed to allocate read buffer\n");
-        // destroy jeff_fs_context_t
+        jeff_fs_bs_unload(ctx);
         spdk_app_stop(-1);
         return;
     }
@@ -51,12 +79,12 @@ static void jeff_fs_blob_sync_complete_cb(void *cb_arg, int bserrno){
                                   SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
     if (!ctx->write_buf) {
         SPDK_NOTICELOG("Failed to allocate write buffer\n");
-        // destroy jeff_fs_context_t
+        jeff_fs_bs_unload(ctx);
         spdk_app_stop(-1);
         return;
     }
-
-    memset(ctx->write_buf, 'A', ctx->io_unit_size);
+    memset(ctx->write_buf, '\0', ctx->io_unit_size);
+    memset(ctx->write_buf, 'A', ctx->io_unit_size - 1);
 
     struct spdk_io_channel *channel = spdk_bs_alloc_io_channel(ctx->blb_store);
     if (!channel) {
